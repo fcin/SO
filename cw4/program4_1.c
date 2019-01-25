@@ -4,15 +4,19 @@
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/sem.h>
-#include <pthread.h>
+#include <sys/shm.h>
+#include <fcntl.h>
+#include <wait.h>
 
-// Uzyj: gcc program4_1.c -pthread -o program4_1
 
 #define PISZ 0
 #define CZYTAJ 1
+#define TRUE 1
+#define FALSE 0
 
 int semafor;
-char bufor[1];
+int pamiec;
+char *adres;
 
 static void utworz_nowy_semafor(void);
 static void ustaw_semafor(int semNum);
@@ -20,29 +24,99 @@ static void semafor_p(int semNum);
 static void semafor_v(int semNum);
 static void usun_semafor(void);
 static void produkuj();
-static void * konsumuj(void *);
+static void konsumuj();
 static void przygotuj_pliki();
+
+static void pamiecStart()
+{
+    pamiec = shmget(9, 256, 0777|IPC_CREAT);
+    if(pamiec == -1)
+	{
+		printf("Nie udalo sie utworzyc pamieci dzielonej\n");
+		exit(1);
+	}
+	else
+	{
+		printf("Pamiec dzielona zostala utworzona, %d \n", pamiec);
+	}
+}
+
+static void adresStart()
+{
+	adres = shmat(pamiec, 0, 0);
+    if(*adres == -1)
+	{
+		printf("Nie udalo sie dolaczyc adresu\n");
+		exit(1);
+	}
+	else
+	{
+		printf("Adres zostal dolaczony\n");
+	}
+}
+
+static void adresStop(int fail)
+{
+    int status = shmdt(adres);
+    if(status == -1 && fail != 0)
+	{
+		printf("Nie udalo sie odlaczyc adresu\n");
+		exit(1);
+	}
+	else
+	{
+		printf("Adres zostal odlaczony\n");
+	}
+}
+
+static void pamiecStop(int fail)
+{
+    int status = shmctl(pamiec, IPC_RMID, 0);
+    if(status == -1 && fail != 0)
+	{
+		printf("Nie udalo sie odlaczyc pamieci dzielonej\n");
+		exit(1);
+	}
+	else
+	{
+		printf("Pamiec dzielona zostala odlaczona\n");
+	}
+}
 
 int main(int argc, char **argv)
 {
+	pamiecStop(FALSE);
 
 	utworz_nowy_semafor();
+
+	pamiecStart();
+	adresStart();
+
 	ustaw_semafor(PISZ);
 	ustaw_semafor(CZYTAJ);
 
 	przygotuj_pliki();
 
-	pthread_t thread1;
-	int tresult = pthread_create(&thread1, NULL, konsumuj, NULL);
-	if(tresult)
+	switch(fork())
 	{
-		printf("ERROR\n");
-		exit(1);
+		case -1:
+			printf("ERROR ON FORK\n");
+			exit(1);
+			break;
+		case 0:
+			konsumuj();
+			break;
+		default:
+			produkuj();
+			{
+				int status, w;
+				w = wait(&status);
+
+				pamiecStop(TRUE);
+				adresStop(TRUE);
+			}
+			break;
 	}
-
-	produkuj();
-
-	pthread_join(thread1, NULL);
 }
 
 static void produkuj()
@@ -56,14 +130,14 @@ static void produkuj()
 
 		semafor_p(CZYTAJ);
 		
-		bufor[0] = znak;
+		adres[0] = znak;
 
 		semafor_v(PISZ);
 
 	} while(znak != EOF);
 }
 
-static void * konsumuj(void * ptr)
+static void konsumuj()
 {
 	FILE* w = fopen("wynik", "w");
 	char znak;
@@ -72,14 +146,14 @@ static void * konsumuj(void * ptr)
 		semafor_v(CZYTAJ);
 		semafor_p(PISZ);
 
-		znak = bufor[0];
+		znak = *adres;
 
 		if(znak == EOF)
 		{
 			break;
 		}
 
-		printf("%s\n", bufor);
+		printf("%c\n", *adres);
 
 		fputc(znak, w);
 	}
